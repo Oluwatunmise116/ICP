@@ -1,0 +1,16 @@
+type Error = variant { NotFound : record { msg : text } };
+type Market = record {
+  id : nat64;
+  categories : text;
+  updated_at : opt nat64;
+  product_id : nat64;
+  created_at : nat64;
+  seller : text;
+  product_name : text;
+  price : nat64;
+};
+type Result = variant { Ok : Market; Err : Error };
+service : {
+  delete_market : (nat64) -> (Result);
+  get_market : (nat64) -> (Result) query;
+}
