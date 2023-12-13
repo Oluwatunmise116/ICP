@@ -23,19 +23,18 @@ struct Market {
 }
 
 impl Storable for Market {
-    // Implement the `Storable` trait for serialization
-    fn to_bytes(&self) -> std::borrow::Cow<[u8]> {
+    fn to_bytes(&self) -> Cow<[u8]> {
         Cow::Owned(Encode!(self).unwrap())
     }
 
-    fn from_bytes(bytes: std::borrow::Cow<[u8]>) -> Self {
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()
     }
 }
 
 impl BoundedStorable for Market {
-    const MAX_SIZE: u32 = 1024; // Maximum size for the serialized data
-    const IS_FIXED_SIZE: bool = false; // Data size is not fixed
+    const MAX_SIZE: u32 = 1024;
+    const IS_FIXED_SIZE: bool = false;
 }
 
 thread_local! {
@@ -64,15 +63,12 @@ struct MarketPayload {
 
 #[ic_cdk::query]
 fn get_market(product_id: u64) -> Result<Market, Error> {
-    match _get_market(&product_id) {
-        Some(market) => Ok(market),
-        None => Err(Error::NotFound {
+    _get_market(&product_id)
+        .ok_or_else(|| Error::NotFound {
             msg: format!("Market with Product ID {} not found", product_id),
-        }),
-    }
+        })
 }
 
-// create market
 fn add_market(market: MarketPayload) -> Option<Market> {
     let id = ID_COUNTER
         .with(|counter| {
@@ -96,18 +92,14 @@ fn add_market(market: MarketPayload) -> Option<Market> {
     Some(market)
 }
 
-
-
-// update market with the product_id created by the user
-
 fn update_market(product_id: u64, payload: MarketPayload) -> Result<Market, Error> {
-    match STORAGE.with(|service| service.borrow().get(&product_id)) {
+    STORAGE.with(|service| match service.borrow_mut().get_mut(&product_id) {
         Some(mut market) => {
             market.seller = payload.seller;
             market.price = payload.price;
             market.updated_at = Some(time());
             do_insert(&market);
-            Ok(market)
+            Ok(market.clone())
         }
         None => Err(Error::NotFound {
             msg: format!(
@@ -118,28 +110,26 @@ fn update_market(product_id: u64, payload: MarketPayload) -> Result<Market, Erro
     }
 }
 
-
-
-
 fn do_insert(market: &Market) {
-    STORAGE.with(|service| service.borrow_mut().insert(market.id, market.clone()));
+    STORAGE.with(|service| {
+        service.borrow_mut().insert(market.id, market.clone());
+    });
 }
 
-
-// delete market using the product_id created by the user
 #[ic_cdk::update]
 fn delete_market(product_id: u64) -> Result<Market, Error> {
-    match STORAGE.with(|service| service.borrow_mut().remove(&product_id)) {
-        Some(market) => Ok(market),
-        None => Err(Error::NotFound {
-            msg: format!(
-                "couldn't delete a market with product_id={}. product not found.",
-                product_id
-            ),
-        }),
-    }
+    STORAGE.with(|service| {
+        service
+            .borrow_mut()
+            .remove(&product_id)
+            .ok_or_else(|| Error::NotFound {
+                msg: format!(
+                    "couldn't delete a market with product_id={}. product not found.",
+                    product_id
+                ),
+            })
+    })
 }
-
 
 #[derive(CandidType, Deserialize, Serialize)]
 enum Error {
@@ -147,9 +137,7 @@ enum Error {
 }
 
 fn _get_market(product_id: &u64) -> Option<Market> {
-    STORAGE.with(|service| service.borrow().get(product_id))
+    STORAGE.with(|service| service.borrow().get(product_id).cloned())
 }
 
-
-// need this to generate candid
 ic_cdk::export_candid!();
