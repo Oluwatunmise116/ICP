@@ -1,16 +1,28 @@
-type Error = variant { NotFound : record { msg : text } };
-type Market = record {
+type Error = variant {
+  InvalidPayload : record { errors : vec text };
+  NotFound : record { msg : text };
+  NotSeller;
+};
+type Product = record {
   id : nat64;
-  categories : text;
   updated_at : opt nat64;
-  product_id : nat64;
+  description : text;
   created_at : nat64;
   seller : text;
   product_name : text;
+  category : opt text;
   price : nat64;
 };
-type Result = variant { Ok : Market; Err : Error };
+type ProductPayload = record {
+  description : text;
+  product_name : text;
+  category : opt text;
+  price : nat64;
+};
+type Result = variant { Ok : Product; Err : Error };
 service : {
-  delete_market : (nat64) -> (Result);
-  get_market : (nat64) -> (Result) query;
+  add_product : (ProductPayload) -> (Result);
+  delete_product : (nat64) -> (Result);
+  get_product : (nat64) -> (Result) query;
+  update_product_price : (nat64, nat64) -> (Result);
 }
