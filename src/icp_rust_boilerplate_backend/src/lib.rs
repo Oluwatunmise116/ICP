@@ -1,42 +1,15 @@
 #[macro_use]
 extern crate serde;
-use candid::{Decode, Encode, CandidType};
 use ic_cdk::api::time;
-use ic_cdk::{update, query};
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-use std::{borrow::Cow, cell::RefCell};
+use ic_cdk::{update, query, caller};
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+use std::cell::RefCell;
 
-type Memory = VirtualMemory<DefaultMemoryImpl>;
-type IdCell = Cell<u64, Memory>;
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Market {
-    id: u64,
-    product_name: String,
-    product_id: u64,
-    seller: String,
-    price: u64,
-    created_at: u64,
-    updated_at: Option<u64>,
-    categories: String,
-}
-
-impl Storable for Market {
-    // Implement the `Storable` trait for serialization
-    fn to_bytes(&self) -> std::borrow::Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: std::borrow::Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for Market {
-    const MAX_SIZE: u32 = 1024; // Maximum size for the serialized data
-    const IS_FIXED_SIZE: bool = false; // Data size is not fixed
-}
+mod types;
+use types::*;
+mod helpers;
+use helpers::*;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
@@ -48,32 +21,30 @@ thread_local! {
             .expect("Cannot create a counter")
     );
 
-    static STORAGE: RefCell<StableBTreeMap<u64, Market, Memory>> =
+    static STORAGE: RefCell<StableBTreeMap<u64, Product, Memory>> =
         RefCell::new(StableBTreeMap::init(
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))
     ));
 }
 
-struct MarketPayload {
-    product_name: String,
-    product_id: u64,
-    seller: String,
-    price: u64,
-    categories: String,
-}
-
-#[ic_cdk::query]
-fn get_market(product_id: u64) -> Result<Market, Error> {
-    match _get_market(&product_id) {
-        Some(market) => Ok(market),
+// Function that allows users to fetch a product from the canister's storage
+#[query]
+fn get_product(product_id: u64) -> Result<Product, Error> {
+    match _get_product(&product_id) {
+        Some(product) => Ok(product),
         None => Err(Error::NotFound {
-            msg: format!("Market with Product ID {} not found", product_id),
+            msg: format!("Product with product ID {} not found", product_id),
         }),
     }
 }
 
-// create market
-fn add_market(market: MarketPayload) -> Option<Market> {
+// Function that allows users to add a product to the canister
+#[update]
+fn add_product(payload: ProductPayload) -> Result<Product, Error> {
+    // checks the input data from the payload and return errors if any
+    // otherwise continue function execution
+    validate_product_payload(&payload)?;
+
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -81,72 +52,73 @@ fn add_market(market: MarketPayload) -> Option<Market> {
         })
         .expect("cannot increment id counter");
 
-    let market = Market {
+    let product = Product {
         id,
-        product_name: market.product_name,
-        product_id: market.product_id,
-        seller: market.seller,
-        price: market.price,
+        product_name: payload.product_name,
+        description: payload.description,
+        seller: caller().to_string(),
+        price: payload.price,
         created_at: time(),
         updated_at: None,
-        categories: market.categories,
+        category: payload.category,
     };
-
-    do_insert(&market);
-    Some(market)
+    // save product
+    do_insert(&product);
+    Ok(product)
 }
 
-
-
-// update market with the product_id created by the user
-
-fn update_market(product_id: u64, payload: MarketPayload) -> Result<Market, Error> {
+// Function that allows a seller of a product to update his product stored in the canister
+#[update]
+fn update_product_price(product_id: u64, price: u64) -> Result<Product, Error> {
+    // check whether product exists
     match STORAGE.with(|service| service.borrow().get(&product_id)) {
-        Some(mut market) => {
-            market.seller = payload.seller;
-            market.price = payload.price;
-            market.updated_at = Some(time());
-            do_insert(&market);
-            Ok(market)
+        Some(mut product) => {
+            // checks whether the caller is the product seller's principal
+            is_caller_product_seller(&product)?;
+            if price == 0{
+                return Err(Error::InvalidPayload { errors: Vec::from([format!("New price must be greater than zero.")]) })
+            }
+            // update price and updated_at fields
+            product.price = price;
+            product.updated_at = Some(time());
+            // save updated product
+            do_insert(&product);
+            Ok(product)
         }
         None => Err(Error::NotFound {
             msg: format!(
-                "couldn't update a market with product_id={}. market not found",
+                "couldn't update a product with product_id={}. Product not found",
                 product_id
             ),
         }),
     }
 }
 
-
-
-
-fn do_insert(market: &Market) {
-    STORAGE.with(|service| service.borrow_mut().insert(market.id, market.clone()));
+fn do_insert(product: &Product) {
+    STORAGE.with(|service| service.borrow_mut().insert(product.id, product.clone()));
 }
 
-
-// delete market using the product_id created by the user
-#[ic_cdk::update]
-fn delete_market(product_id: u64) -> Result<Market, Error> {
+// Function that allows a seller of a product to delete his product from the canister
+#[update]
+fn delete_product(product_id: u64) -> Result<Product, Error> {
+    // check whether product exists and return product if true
+    let product = get_product(product_id)?;
+    // checks whether the caller is the product seller's principal
+    is_caller_product_seller(&product)?;
+    // delete product from the canister
     match STORAGE.with(|service| service.borrow_mut().remove(&product_id)) {
-        Some(market) => Ok(market),
+        Some(product) => Ok(product),
         None => Err(Error::NotFound {
             msg: format!(
-                "couldn't delete a market with product_id={}. product not found.",
+                "couldn't delete a Product with product_id={}. product not found.",
                 product_id
             ),
         }),
     }
 }
 
-
-#[derive(CandidType, Deserialize, Serialize)]
-enum Error {
-    NotFound { msg: String },
-}
-
-fn _get_market(product_id: &u64) -> Option<Market> {
+// helper function to fetch a product from the canister's storage
+fn _get_product(product_id: &u64) -> Option<Product> {
     STORAGE.with(|service| service.borrow().get(product_id))
 }
 
